@@ -61,11 +61,7 @@ const canAnswerFriendshipRequest = authGuard.unstable_pipe(
 )
 
 export const friendshipRequestRouter = router({
-  send: procedure
-    .use(canSendFriendshipRequest)
-    .input(SendFriendshipRequestInputSchema)
-    .mutation(async ({ ctx, input }) => {
-      /**
+  /**
        * Question 3: Fix bug
        *
        * Fix a bug where our users could not send a friendship request after
@@ -79,63 +75,120 @@ export const friendshipRequestRouter = router({
        * scenario for Question 3
        *  - Run `yarn test` to verify your answer
        */
-      return ctx.db
-        .insertInto('friendships')
-        .values({
-          userId: ctx.session.userId,
-          friendUserId: input.friendUserId,
-          status: FriendshipStatusSchema.Values['requested'],
-        })
-        .execute()
-    }),
+  send: procedure
+    .use(canSendFriendshipRequest)
+    .input(SendFriendshipRequestInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const existingFriendship = await ctx.db
+        .selectFrom('friendships')
+        .where('userId', '=', ctx.session.userId)
+        .where('friendUserId', '=', input.friendUserId)
+        .select('status')
+        .limit(1)
+        .executeTakeFirst();
 
+      if (existingFriendship) {
+        if (existingFriendship.status === FriendshipStatusSchema.Values['declined']) {
+          return ctx.db
+            .updateTable('friendships')
+            .set({ status: FriendshipStatusSchema.Values['requested'] })
+            .where('userId', '=', ctx.session.userId)
+            .where('friendUserId', '=', input.friendUserId)
+            .execute();
+        } else {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Yêu cầu kết bạn đã tồn tại.',
+          });
+        }
+      } else {
+        return ctx.db
+          .insertInto('friendships')
+          .values({
+            userId: ctx.session.userId,
+            friendUserId: input.friendUserId,
+            status: FriendshipStatusSchema.Values['requested'],
+          })
+          .execute();
+      }
+    }),
+  /**
+           * Question 1: Implement api to accept a friendship request
+           *
+           * When a user accepts a friendship request, we need to:
+           *  1. Update the friendship request to have status `accepted`
+           *  2. Create a new friendship request record with the opposite user as the friend
+           *
+           * The end result that we want will look something like this
+           *
+           *  | userId | friendUserId | status   |
+           *  | ------ | ------------ | -------- |
+           *  | 1      | 2            | accepted |
+           *  | 2      | 1            | accepted |
+           *
+           * Instructions:
+           *  - Your answer must be inside this transaction code block
+           *  - Run `yarn test` to verify your answer
+           *
+           * Documentation references:
+           *  - https://kysely-org.github.io/kysely/classes/Transaction.html#transaction
+           *  - https://kysely-org.github.io/kysely/classes/Kysely.html#insertInto
+           *  - https://kysely-org.github.io/kysely/classes/Kysely.html#updateTable
+           */
   accept: procedure
     .use(canAnswerFriendshipRequest)
     .input(AnswerFriendshipRequestInputSchema)
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction().execute(async (t) => {
-        /**
-         * Question 1: Implement api to accept a friendship request
+        await t.updateTable('friendships')
+          .set({ status: FriendshipStatusSchema.Values['accepted'] })
+          .where('userId', '=', input.friendUserId)
+          .where('friendUserId', '=', ctx.session.userId)
+          .execute()
+        const existingFriendship = await t.selectFrom('friendships')
+          .where('userId', '=', ctx.session.userId)
+          .where('friendUserId', '=', input.friendUserId)
+          .select('id')
+          .limit(1)
+          .executeTakeFirst()
+
+        if (existingFriendship) {
+          await t.updateTable('friendships')
+            .set({ status: FriendshipStatusSchema.Values['accepted'] })
+            .where('id', '=', existingFriendship.id)
+            .execute()
+        } else {
+          await t.insertInto('friendships')
+            .values({
+              userId: ctx.session.userId,
+              friendUserId: input.friendUserId,
+              status: FriendshipStatusSchema.Values['accepted'],
+            })
+            .execute()
+        }
+      })
+    }),
+  /**
+         * Question 2: Implement api to decline a friendship request
          *
-         * When a user accepts a friendship request, we need to:
-         *  1. Update the friendship request to have status `accepted`
-         *  2. Create a new friendship request record with the opposite user as the friend
-         *
-         * The end result that we want will look something like this
-         *
-         *  | userId | friendUserId | status   |
-         *  | ------ | ------------ | -------- |
-         *  | 1      | 2            | accepted |
-         *  | 2      | 1            | accepted |
+         * Set the friendship request status to `declined`
          *
          * Instructions:
-         *  - Your answer must be inside this transaction code block
+         *  - Go to src/server/tests/friendship-request.test.ts, enable the test
+         * scenario for Question 2
          *  - Run `yarn test` to verify your answer
          *
          * Documentation references:
-         *  - https://kysely-org.github.io/kysely/classes/Transaction.html#transaction
-         *  - https://kysely-org.github.io/kysely/classes/Kysely.html#insertInto
-         *  - https://kysely-org.github.io/kysely/classes/Kysely.html#updateTable
+         *  - https://vitest.dev/api/#test-skip
          */
-      })
-    }),
-
   decline: procedure
     .use(canAnswerFriendshipRequest)
     .input(AnswerFriendshipRequestInputSchema)
     .mutation(async ({ ctx, input }) => {
-      /**
-       * Question 2: Implement api to decline a friendship request
-       *
-       * Set the friendship request status to `declined`
-       *
-       * Instructions:
-       *  - Go to src/server/tests/friendship-request.test.ts, enable the test
-       * scenario for Question 2
-       *  - Run `yarn test` to verify your answer
-       *
-       * Documentation references:
-       *  - https://vitest.dev/api/#test-skip
-       */
+      await ctx.db.updateTable('friendships')
+        .set({ status: FriendshipStatusSchema.Values['declined'] })
+        .where('userId', '=', input.friendUserId)
+        .where('friendUserId', '=', ctx.session.userId)
+        .execute()
     }),
 })
